@@ -29,6 +29,29 @@ PRIORITY_LABELS = [
     "Suzuka",
     "Montreal",
     "São Paulo",
+    "Bahrain (Sakhir)",
+    "Budapest",
+    "Montmeló",
+    "Abu Dhabi",
+    "Baku",
+    "Austin",
+    "Marina Bay",
+    "Melbourne",
+    "Zandvoort",
+    "Imola",
+    "Shanghai",
+    "Miami",
+    "Jeddah",
+    "Las Vegas",
+    "Spielberg",
+    "Al Daayen",
+    "Sochi",
+    "Le Castellet",
+    "Portimão",
+    "Hockenheim",
+    "Istanbul",
+    "Nürburg",
+    "Mugello",
 ]
 
 
@@ -80,7 +103,7 @@ def build_tables(grid: pd.DataFrame, pits: pd.DataFrame, sectors: pd.DataFrame, 
     status.to_parquet(OUT / "status.parquet", index=False)
 
 
-def build_track_outlines(grid: pd.DataFrame, year: int = 2024, limit: int = 16) -> None:
+def build_track_outlines(grid: pd.DataFrame, year: int = 2024, limit: int = 40) -> None:
     """Snapshot MultiViewer outlines into JSON so Cloud needs no live map API."""
     counts = grid.groupby("circuit_label")["raceId"].nunique().sort_values(ascending=False)
     labels: list[str] = []

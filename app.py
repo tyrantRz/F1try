@@ -179,6 +179,24 @@ def filter_sectors_by_team(sectors: pd.DataFrame, team: str | None) -> pd.DataFr
     return sectors.loc[mask].copy()
 
 
+def filter_sectors(
+    sectors: pd.DataFrame,
+    event_keys: list[str],
+    team: str | None = None,
+    y0: int | None = None,
+    y1: int | None = None,
+) -> pd.DataFrame:
+    """Apply circuit event match + optional year window + team filter."""
+    if sectors.empty or not event_keys:
+        return sectors.iloc[0:0].copy()
+    sub = sectors[sectors["event_key"].isin(event_keys)].copy()
+    if y0 is not None and "Year" in sub.columns:
+        sub = sub[sub["Year"] >= y0]
+    if y1 is not None and "Year" in sub.columns:
+        sub = sub[sub["Year"] <= y1]
+    return filter_sectors_by_team(sub, team)
+
+
 def attach_pit_teams(pits: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
     """Join constructor_name onto pit stops (processed pits lack team)."""
     if pits.empty:
@@ -587,10 +605,16 @@ def grid_vs_figure(metrics: pd.DataFrame, circuit: str, metric: str, sel_grid: i
 
 
 def fastest_bars(
-    sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: str, team: str | None = None
+    sectors: pd.DataFrame,
+    event_keys: list[str],
+    seg: int,
+    driver: str,
+    team: str | None = None,
+    y0: int | None = None,
+    y1: int | None = None,
 ) -> go.Figure:
     col = {1: "Sector1Time", 2: "Sector2Time", 3: "Sector3Time"}[seg]
-    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
+    sub = filter_sectors(sectors, event_keys, team=team, y0=y0, y1=y1)
     sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub = sub[(sub[col] > 5) & (sub[col] < 120)]
     best = sub.groupby("Driver", as_index=False)[col].min().sort_values(col).head(8)
@@ -627,10 +651,16 @@ def fastest_bars(
 
 
 def dist_figure(
-    sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: str, team: str | None = None
+    sectors: pd.DataFrame,
+    event_keys: list[str],
+    seg: int,
+    driver: str,
+    team: str | None = None,
+    y0: int | None = None,
+    y1: int | None = None,
 ) -> go.Figure:
     col = {1: "Sector1Time", 2: "Sector2Time", 3: "Sector3Time"}[seg]
-    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
+    sub = filter_sectors(sectors, event_keys, team=team, y0=y0, y1=y1)
     if "Deleted" in sub.columns:
         sub = sub[sub["Deleted"].fillna(False) == False]  # noqa: E712
     field = pd.to_numeric(sub[col], errors="coerce")
@@ -669,8 +699,14 @@ def line_by_year(x, y, title: str, color=S1, name="series") -> go.Figure:
     return fig
 
 
-def strategy_tyre_laps(sectors: pd.DataFrame, event_keys: list[str], team: str | None = None) -> go.Figure:
-    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
+def strategy_tyre_laps(
+    sectors: pd.DataFrame,
+    event_keys: list[str],
+    team: str | None = None,
+    y0: int | None = None,
+    y1: int | None = None,
+) -> go.Figure:
+    sub = filter_sectors(sectors, event_keys, team=team, y0=y0, y1=y1)
     sub["Compound"] = sub["Compound"].fillna("UNKNOWN").str.upper()
     counts = sub["Compound"].value_counts()
     order = [c for c in ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"] if c in counts.index]
@@ -709,8 +745,14 @@ def strategy_pit_dist(
     return fig
 
 
-def strategy_tyre_comp(sectors: pd.DataFrame, event_keys: list[str], team: str | None = None) -> go.Figure:
-    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
+def strategy_tyre_comp(
+    sectors: pd.DataFrame,
+    event_keys: list[str],
+    team: str | None = None,
+    y0: int | None = None,
+    y1: int | None = None,
+) -> go.Figure:
+    sub = filter_sectors(sectors, event_keys, team=team, y0=y0, y1=y1)
     if sub.empty:
         return go.Figure()
     sub["Compound"] = sub["Compound"].fillna("UNKNOWN").str.upper()
@@ -785,7 +827,23 @@ def main() -> None:
     with f1:
         circuit = st.selectbox("Circuit", circuits, key="circuit")
     with f2:
-        years = st.slider("Years", min_value=max(2014, y_min), max_value=y_max, value=(2018, min(2024, y_max)), key="years")
+        # Prefer a completed-season default; 2026 rows exist in RaceData but have no sector laps yet.
+        year_lo = max(2014, y_min)
+        year_hi = y_max
+        default_hi = min(2025, year_hi) if year_hi >= 2018 else year_hi
+        default_lo = min(2018, default_hi) if default_hi >= 2018 else year_lo
+        if "years" in st.session_state:
+            y_a, y_b = st.session_state.years
+            # Clamp stale single-year-at-max selections that wipe Segment charts
+            if y_a == y_b == year_hi and year_hi > default_hi:
+                st.session_state.years = (default_lo, default_hi)
+        years = st.slider(
+            "Years",
+            min_value=year_lo,
+            max_value=year_hi,
+            value=(default_lo, default_hi),
+            key="years",
+        )
     with f3:
         metric = st.selectbox(
             "Metric",
@@ -935,7 +993,13 @@ def main() -> None:
     with s_top_r:
         if event_keys:
             fast_fig = fastest_bars(
-                sectors, event_keys, seg, driver if driver != "All" else "", team=team_arg
+                sectors,
+                event_keys,
+                seg,
+                driver if driver != "All" else "",
+                team=team_arg,
+                y0=y0,
+                y1=y1,
             )
             if fast_fig.data:
                 show_chart(
@@ -955,7 +1019,7 @@ def main() -> None:
         st.info("Mock uses a year line chart here. Current sources have no overtake-by-segment history.")
     with s2:
         if event_keys:
-            show_chart(dist_figure(sectors, event_keys, seg, driver, team=team_arg))
+            show_chart(dist_figure(sectors, event_keys, seg, driver, team=team_arg, y0=y0, y1=y1))
         else:
             st.write("No distribution data.")
     with s3:
@@ -978,7 +1042,7 @@ def main() -> None:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if event_keys:
-            show_chart(strategy_tyre_laps(sectors, event_keys, team=team_arg))
+            show_chart(strategy_tyre_laps(sectors, event_keys, team=team_arg, y0=y0, y1=y1))
         else:
             st.write("No tyre laps.")
     with c2:
@@ -988,7 +1052,7 @@ def main() -> None:
         else:
             st.write("No pit distribution.")
     with c3:
-        fig = strategy_tyre_comp(sectors, event_keys, team=team_arg)
+        fig = strategy_tyre_comp(sectors, event_keys, team=team_arg, y0=y0, y1=y1)
         if fig.data:
             show_chart(fig)
         else:
