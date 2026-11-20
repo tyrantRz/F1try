@@ -140,13 +140,63 @@ def accident_count(df: pd.DataFrame, status: pd.DataFrame, circuit: str, y0: int
     return int(mask.sum())
 
 
+def _norm_team(name: str) -> str:
+    t = str(name or "").lower().strip()
+    for junk in ("f1 team", "racing", "team"):
+        t = t.replace(junk, " ")
+    return " ".join(t.split())
+
+
+# Map RaceData constructor_name ↔ tif1 Team labels
+_TEAM_CANON = {
+    "red bull": "red bull",
+    "alpine": "alpine",
+    "alfa romeo": "alfa romeo",
+    "sauber": "sauber",
+    "kick sauber": "sauber",
+    "rb": "rb",
+    "racing bulls": "rb",
+    "alphatauri": "rb",
+    "toro rosso": "rb",
+    "haas": "haas",
+}
+
+
+def team_canon(name: str) -> str:
+    n = _norm_team(name)
+    return _TEAM_CANON.get(n, n)
+
+
+def teams_compatible(a: str, b: str) -> bool:
+    ca, cb = team_canon(a), team_canon(b)
+    return ca == cb or ca in cb or cb in ca
+
+
+def filter_sectors_by_team(sectors: pd.DataFrame, team: str | None) -> pd.DataFrame:
+    if sectors.empty or not team or team == "All" or "Team" not in sectors.columns:
+        return sectors
+    mask = sectors["Team"].astype(str).map(lambda t: teams_compatible(team, t))
+    return sectors.loc[mask].copy()
+
+
+def attach_pit_teams(pits: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
+    """Join constructor_name onto pit stops (processed pits lack team)."""
+    if pits.empty:
+        return pits
+    if "constructor_name" in pits.columns:
+        return pits
+    key = results[["raceId", "driverId", "constructor_name"]].drop_duplicates()
+    return pits.merge(key, on=["raceId", "driverId"], how="left")
+
+
 def avg_pit_stops(pits: pd.DataFrame, circuit: str, y0: int, y1: int, team: str | None) -> float:
     if pits.empty:
         return np.nan
     sub = pits[(pits["circuit_label"] == circuit) & (pits["year"] >= y0) & (pits["year"] <= y1)]
+    if team and team != "All" and "constructor_name" in sub.columns:
+        sub = sub[sub["constructor_name"].astype(str).map(lambda t: teams_compatible(team, t))]
     if sub.empty:
         return np.nan
-    # stops per driver-race
     counts = sub.groupby(["raceId", "driverId"]).size()
     return float(counts.mean())
 
@@ -274,25 +324,30 @@ def heatmap_figure(metrics: pd.DataFrame, circuits: list[str], metric: str, sel_
     return fig
 
 
-def driver_options(results: pd.DataFrame, sectors: pd.DataFrame, circuit: str, event_keys: list[str]) -> list[str]:
+def driver_options(
+    results: pd.DataFrame,
+    sectors: pd.DataFrame,
+    circuit: str,
+    event_keys: list[str],
+    team: str | None = None,
+) -> list[str]:
     """Drivers for the filter: sector codes first, then race-result codes as fallback."""
+    res = results[results["circuit_label"] == circuit]
+    if team and team != "All" and "constructor_name" in res.columns:
+        res = res[res["constructor_name"].astype(str).map(lambda t: teams_compatible(team, t))]
+
     from_sectors: list[str] = []
-    if event_keys and "Driver" in sectors.columns:
-        from_sectors = (
-            sectors.loc[sectors["event_key"].isin(event_keys), "Driver"]
-            .dropna()
-            .astype(str)
-            .unique()
-            .tolist()
-        )
+    sec = filter_sectors_by_team(
+        sectors[sectors["event_key"].isin(event_keys)] if event_keys else sectors.iloc[0:0],
+        team,
+    )
+    if not sec.empty and "Driver" in sec.columns:
+        from_sectors = sec["Driver"].dropna().astype(str).unique().tolist()
+
     from_results: list[str] = []
-    if "code" in results.columns:
+    if "code" in res.columns:
         from_results = (
-            results.loc[results["circuit_label"] == circuit, "code"]
-            .dropna()
-            .astype(str)
-            .unique()
-            .tolist()
+            res["code"].dropna().astype(str).unique().tolist()
         )
         from_results = [c for c in from_results if c and c != "\\N"]
     merged = sorted(set(from_sectors) | set(from_results))
@@ -385,9 +440,10 @@ def on_trackmap_click() -> None:
             return
     except (TypeError, ValueError):
         pass
+    # curve 0 = faint outline; 1/2/3 = segments
     curve = pt.get("curve_number")
-    if curve in (0, 1, 2):
-        st.session_state.sel_seg = int(curve) + 1
+    if curve in (1, 2, 3):
+        st.session_state.sel_seg = int(curve)
 
 
 def on_fastest_click() -> None:
@@ -530,9 +586,11 @@ def grid_vs_figure(metrics: pd.DataFrame, circuit: str, metric: str, sel_grid: i
     return fig
 
 
-def fastest_bars(sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: str) -> go.Figure:
+def fastest_bars(
+    sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: str, team: str | None = None
+) -> go.Figure:
     col = {1: "Sector1Time", 2: "Sector2Time", 3: "Sector3Time"}[seg]
-    sub = sectors[sectors["event_key"].isin(event_keys)].copy()
+    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
     sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub = sub[(sub[col] > 5) & (sub[col] < 120)]
     best = sub.groupby("Driver", as_index=False)[col].min().sort_values(col).head(8)
@@ -568,9 +626,11 @@ def fastest_bars(sectors: pd.DataFrame, event_keys: list[str], seg: int, driver:
     return fig
 
 
-def dist_figure(sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: str) -> go.Figure:
+def dist_figure(
+    sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: str, team: str | None = None
+) -> go.Figure:
     col = {1: "Sector1Time", 2: "Sector2Time", 3: "Sector3Time"}[seg]
-    sub = sectors[sectors["event_key"].isin(event_keys)].copy()
+    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
     if "Deleted" in sub.columns:
         sub = sub[sub["Deleted"].fillna(False) == False]  # noqa: E712
     field = pd.to_numeric(sub[col], errors="coerce")
@@ -581,9 +641,10 @@ def dist_figure(sectors: pd.DataFrame, event_keys: list[str], seg: int, driver: 
         drv = pd.to_numeric(sub.loc[sub["Driver"] == driver, col], errors="coerce")
         drv = drv[(drv > 5) & (drv < 120)].dropna()
         fig.add_trace(go.Histogram(x=drv, nbinsx=24, name=f"{driver} specific", marker_color=S2, opacity=0.65))
+    title = "Segment time distribution" + (f" · {team}" if team and team != "All" else "")
     fig.update_layout(
         barmode="overlay",
-        title="Segment time distribution",
+        title=title,
         height=220,
         margin=dict(l=10, r=10, t=40, b=10),
         xaxis_title="segment time (s) →",
@@ -608,8 +669,8 @@ def line_by_year(x, y, title: str, color=S1, name="series") -> go.Figure:
     return fig
 
 
-def strategy_tyre_laps(sectors: pd.DataFrame, event_keys: list[str]) -> go.Figure:
-    sub = sectors[sectors["event_key"].isin(event_keys)].copy()
+def strategy_tyre_laps(sectors: pd.DataFrame, event_keys: list[str], team: str | None = None) -> go.Figure:
+    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
     sub["Compound"] = sub["Compound"].fillna("UNKNOWN").str.upper()
     counts = sub["Compound"].value_counts()
     order = [c for c in ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"] if c in counts.index]
@@ -626,8 +687,12 @@ def strategy_tyre_laps(sectors: pd.DataFrame, event_keys: list[str]) -> go.Figur
     return fig
 
 
-def strategy_pit_dist(pits: pd.DataFrame, circuit: str, y0: int, y1: int) -> go.Figure:
+def strategy_pit_dist(
+    pits: pd.DataFrame, circuit: str, y0: int, y1: int, team: str | None = None
+) -> go.Figure:
     sub = pits[(pits["circuit_label"] == circuit) & (pits["year"] >= y0) & (pits["year"] <= y1)]
+    if team and team != "All" and "constructor_name" in sub.columns:
+        sub = sub[sub["constructor_name"].astype(str).map(lambda t: teams_compatible(team, t))]
     if sub.empty:
         return go.Figure()
     stops = sub.groupby(["raceId", "driverId"]).size()
@@ -644,8 +709,8 @@ def strategy_pit_dist(pits: pd.DataFrame, circuit: str, y0: int, y1: int) -> go.
     return fig
 
 
-def strategy_tyre_comp(sectors: pd.DataFrame, event_keys: list[str]) -> go.Figure:
-    sub = sectors[sectors["event_key"].isin(event_keys)].copy()
+def strategy_tyre_comp(sectors: pd.DataFrame, event_keys: list[str], team: str | None = None) -> go.Figure:
+    sub = filter_sectors_by_team(sectors[sectors["event_key"].isin(event_keys)].copy(), team)
     if sub.empty:
         return go.Figure()
     sub["Compound"] = sub["Compound"].fillna("UNKNOWN").str.upper()
@@ -675,12 +740,17 @@ def strategy_tyre_comp(sectors: pd.DataFrame, event_keys: list[str]) -> go.Figur
     return fig
 
 
-def strategy_avg_pits(pits: pd.DataFrame, circuit: str, y0: int, y1: int) -> go.Figure:
+def strategy_avg_pits(
+    pits: pd.DataFrame, circuit: str, y0: int, y1: int, team: str | None = None
+) -> go.Figure:
     sub = pits[(pits["circuit_label"] == circuit) & (pits["year"] >= y0) & (pits["year"] <= y1)]
+    if team and team != "All" and "constructor_name" in sub.columns:
+        sub = sub[sub["constructor_name"].astype(str).map(lambda t: teams_compatible(team, t))]
     if sub.empty:
         return go.Figure()
     by_year = sub.groupby(["year", "raceId", "driverId"]).size().groupby("year").mean()
-    return line_by_year(by_year.index, by_year.values, "Avg pit stops over time", color=S1, name="All teams")
+    label = team if team and team != "All" else "All teams"
+    return line_by_year(by_year.index, by_year.values, "Avg pit stops over time", color=S1, name=label)
 
 
 def main() -> None:
@@ -702,8 +772,9 @@ def main() -> None:
     defaults = {
         "circuit": default_circuit,
         "sel_grid": 3,
-        "sel_seg": 2,
+        "sel_seg": 1,
         "driver": "All",
+        "team": "All",
         "nonce": 0,
     }
     for k, v in defaults.items():
@@ -723,25 +794,27 @@ def main() -> None:
             key="metric",
         )
 
+    # Team first so Driver options can narrow to that team
+    teams = ["All"] + sorted(
+        results.loc[results["circuit_label"] == circuit, "constructor_name"].dropna().astype(str).unique().tolist()
+    )
+    if st.session_state.team not in teams:
+        st.session_state.team = "All"
+    with f5:
+        team = st.selectbox("Team", teams, key="team")
+
     event_keys = sector_events_for_circuit(
         sectors,
         circuit,
         str(results.loc[results["circuit_label"] == circuit, "location"].iloc[0]),
     )
-    drivers = driver_options(results, sectors, circuit, event_keys)
+    drivers = driver_options(results, sectors, circuit, event_keys, team=team)
     if st.session_state.driver not in drivers:
         st.session_state.driver = "All"
 
     with f4:
         driver = st.selectbox("Driver", drivers, key="driver")
-        st.caption(f"{len(drivers) - 1} drivers available")
-    with f5:
-        teams = ["All"] + sorted(
-            results.loc[results["circuit_label"] == circuit, "constructor_name"].dropna().astype(str).unique().tolist()
-        )
-        if "team" in st.session_state and st.session_state.team not in teams:
-            st.session_state.team = "All"
-        team = st.selectbox("Team", teams, key="team")
+        st.caption(f"{len(drivers) - 1} drivers" + (f" · {team}" if team != "All" else ""))
     with f6:
         st.write("")
         if st.button("Reset ↺", use_container_width=True):
@@ -751,8 +824,10 @@ def main() -> None:
             st.session_state.nonce = next_nonce
             st.rerun()
 
+    pits = attach_pit_teams(pits, results)
     y0, y1 = years
     metrics = grid_metrics(results, y0, y1, max_grid=10)
+    team_arg = None if team == "All" else team
     heat_circuits = [c for c in circuits if c in set(metrics["circuit_label"])][:6]
     for c in [circuit, *SMALL_CIRCUITS]:
         if c in set(metrics["circuit_label"]) and c not in heat_circuits:
@@ -761,7 +836,7 @@ def main() -> None:
 
     # ---------- KPI row (mock: 3 cards) ----------
     crashes = accident_count(results, status, circuit, y0, y1)
-    avg_stops = avg_pit_stops(pits, circuit, y0, y1, None if team == "All" else team)
+    avg_stops = avg_pit_stops(pits, circuit, y0, y1, team_arg)
     k1, k2, k3 = st.columns(3)
     k1.metric("# Crashes", crashes, help="Accident/collision/spun statuses at this circuit in selected years")
     k2.metric("Avg pit stops", f"{avg_stops:.2f}" if pd.notna(avg_stops) else "—", help="Mean stops per driver-race")
@@ -833,13 +908,10 @@ def main() -> None:
     # 2. Segment Analysis
     # =====================================================
     st.markdown("### 2 · Segment Analysis")
-    st.caption("Click a track segment or use the toggle · hover charts for details")
-    seg = st.radio(
-        "Segment",
-        options=[1, 2, 3],
-        horizontal=True,
-        format_func=lambda s: f"Segment {s}",
-        key="sel_seg",
+    seg = int(st.session_state.sel_seg) if int(st.session_state.sel_seg) in (1, 2, 3) else 1
+    st.session_state.sel_seg = seg
+    st.caption(
+        f"Selected **Segment {seg}** · click a coloured section on the track map to change · hover for details"
     )
 
     s_top_l, s_top_r = st.columns([1.35, 1])
@@ -862,7 +934,9 @@ def main() -> None:
             st.info("No track outline for this circuit. Run `py -3 scripts/build_aggregates.py --only maps`.")
     with s_top_r:
         if event_keys:
-            fast_fig = fastest_bars(sectors, event_keys, seg, driver if driver != "All" else "")
+            fast_fig = fastest_bars(
+                sectors, event_keys, seg, driver if driver != "All" else "", team=team_arg
+            )
             if fast_fig.data:
                 show_chart(
                     fast_fig,
@@ -881,11 +955,13 @@ def main() -> None:
         st.info("Mock uses a year line chart here. Current sources have no overtake-by-segment history.")
     with s2:
         if event_keys:
-            show_chart(dist_figure(sectors, event_keys, seg, driver))
+            show_chart(dist_figure(sectors, event_keys, seg, driver, team=team_arg))
         else:
             st.write("No distribution data.")
     with s3:
         sub = results[(results["circuit_label"] == circuit) & (results["year"] >= y0) & (results["year"] <= y1)]
+        if team_arg:
+            sub = sub[sub["constructor_name"].astype(str).map(lambda t: teams_compatible(team_arg, t))]
         dnf = sub[sub["position"].isna()].groupby("year").size()
         show_chart(line_by_year(dnf.index, dnf.values, "Number of DNF (circuit-level proxy)"))
         st.caption("Mock asks for DNF in segment; public data only supports circuit-level DNF here.")
@@ -896,27 +972,29 @@ def main() -> None:
     # 3. Strategy
     # =====================================================
     st.markdown("### 3 · Strategy")
-    st.caption("Team overlay / tyre highlight interactions approximated with filters above")
+    st.caption(
+        "Filtered by Team above" + (f" · showing **{team}**" if team != "All" else " · All teams")
+    )
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if event_keys:
-            show_chart(strategy_tyre_laps(sectors, event_keys))
+            show_chart(strategy_tyre_laps(sectors, event_keys, team=team_arg))
         else:
             st.write("No tyre laps.")
     with c2:
-        fig = strategy_pit_dist(pits, circuit, y0, y1)
+        fig = strategy_pit_dist(pits, circuit, y0, y1, team=team_arg)
         if fig.data:
             show_chart(fig)
         else:
             st.write("No pit distribution.")
     with c3:
-        fig = strategy_tyre_comp(sectors, event_keys)
+        fig = strategy_tyre_comp(sectors, event_keys, team=team_arg)
         if fig.data:
             show_chart(fig)
         else:
             st.write("No tyre composition.")
     with c4:
-        fig = strategy_avg_pits(pits, circuit, y0, y1)
+        fig = strategy_avg_pits(pits, circuit, y0, y1, team=team_arg)
         if fig.data:
             show_chart(fig)
         else:

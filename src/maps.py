@@ -154,34 +154,43 @@ def circuit_map_figure(
     outline: dict,
     selected_segment: int,
 ) -> go.Figure:
-    x = outline["x"]
-    y = outline["y"]
+    x = list(outline["x"])
+    y = list(outline["y"])
     segs = _segment_index_by_distance(x, y)
     fig = go.Figure()
+    # faint full outline under segments (not clickable)
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            hoverinfo="skip",
+            showlegend=False,
+            line=dict(color="rgba(137,135,129,0.25)", width=14),
+        )
+    )
     for segment in (1, 2, 3):
-        mask = segs == segment
-        # keep continuity gaps as None breaks
-        xs, ys = [], []
-        for i, flag in enumerate(mask):
-            if flag:
-                xs.append(x[i])
-                ys.append(y[i])
-            else:
-                if xs and xs[-1] is not None:
-                    xs.append(None)
-                    ys.append(None)
-        width = 7 if segment == selected_segment else 3
-        opacity = 1.0 if segment == selected_segment else 0.45
+        idx = np.where(segs == segment)[0]
+        if len(idx) == 0:
+            continue
+        # include first point of next segment so the stroke has no gap
+        nxt = np.where(segs == (segment % 3) + 1)[0]
+        if segment < 3 and len(nxt):
+            idx = np.concatenate([idx, nxt[:1]])
+        xs = [x[i] for i in idx]
+        ys = [y[i] for i in idx]
+        on = selected_segment == segment
         fig.add_trace(
             go.Scatter(
                 x=xs,
                 y=ys,
-                mode="lines",
+                mode="lines+markers",
                 name=f"Segment {segment}",
-                line=dict(color=SEGMENT_COLORS[segment], width=width),
-                opacity=opacity,
+                line=dict(color=SEGMENT_COLORS[segment], width=9 if on else 4),
+                marker=dict(size=12, color="rgba(0,0,0,0.01)"),  # invisible hit targets
+                opacity=1.0 if on else 0.45,
+                customdata=np.full(len(xs), segment),
                 hovertemplate=f"<b>Segment {segment}</b><br>click to select<extra></extra>",
-                customdata=[segment] * len(xs),
             )
         )
 
@@ -191,23 +200,26 @@ def circuit_map_figure(
             go.Scatter(
                 x=[c["trackPosition"]["x"] for c in corners],
                 y=[c["trackPosition"]["y"] for c in corners],
-                mode="markers+text",
+                mode="text",
                 text=[str(c.get("number", "")) for c in corners],
                 textposition="top center",
-                marker=dict(size=8, color="#111"),
                 name="Corners",
-                hovertext=[f"Corner {c.get('number')}" for c in corners],
-                hoverinfo="text",
+                hoverinfo="skip",
+                showlegend=False,
+                textfont=dict(size=9, color="#898781"),
             )
         )
 
     fig.update_layout(
-        title=f"{outline.get('circuitName', 'Circuit')} · {outline.get('_resolved_year', '')} layout",
+        title=(
+            f"{outline.get('circuitName', 'Circuit')} · {outline.get('_resolved_year', '')} layout"
+            f" · selected Segment {selected_segment}"
+        ),
         xaxis=dict(visible=False, fixedrange=True),
         yaxis=dict(visible=False, scaleanchor="x", scaleratio=1, fixedrange=True),
         height=420,
         margin=dict(l=10, r=10, t=50, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, itemclick=False, itemdoubleclick=False),
         plot_bgcolor="#f7f7f5",
         paper_bgcolor="rgba(0,0,0,0)",
         clickmode="event+select",
