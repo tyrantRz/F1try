@@ -1,0 +1,17 @@
+# Python / Streamlit
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.streamlit/secrets.toml
+.fastf1_cache/
+
+# Large raw sources — Cloud uses data/processed only
+data/raw/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
