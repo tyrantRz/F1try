@@ -827,22 +827,14 @@ def main() -> None:
     with f1:
         circuit = st.selectbox("Circuit", circuits, key="circuit")
     with f2:
-        # Prefer a completed-season default; 2026 rows exist in RaceData but have no sector laps yet.
-        year_lo = max(2014, y_min)
-        year_hi = y_max
-        default_hi = min(2025, year_hi) if year_hi >= 2018 else year_hi
-        default_lo = min(2018, default_hi) if default_hi >= 2018 else year_lo
-        if "years" in st.session_state:
-            y_a, y_b = st.session_state.years
-            # Clamp stale single-year-at-max selections that wipe Segment charts
-            if y_a == y_b == year_hi and year_hi > default_hi:
-                st.session_state.years = (default_lo, default_hi)
         years = st.slider(
             "Years",
-            min_value=year_lo,
-            max_value=year_hi,
-            value=(default_lo, default_hi),
+            min_value=max(2014, y_min),
+            max_value=y_max,
+            value=(max(2014, y_min), y_max),
             key="years",
+            help="Filters Grid / crashes / pits / sector charts. Some sources only cover part of this range "
+            "(sector laps ≈2018–2025); empty Segment charts mean no laps in the selected years.",
         )
     with f3:
         metric = st.selectbox(
@@ -992,6 +984,7 @@ def main() -> None:
             st.info("No track outline for this circuit. Run `py -3 scripts/build_aggregates.py --only maps`.")
     with s_top_r:
         if event_keys:
+            sector_in_years = filter_sectors(sectors, event_keys, team=team_arg, y0=y0, y1=y1)
             fast_fig = fastest_bars(
                 sectors,
                 event_keys,
@@ -1008,10 +1001,15 @@ def main() -> None:
                     selection_mode="points",
                     key=f"fastest_chart_{nonce}",
                 )
+            elif sector_in_years.empty:
+                st.warning(
+                    f"No sector laps for {circuit} in {y0}–{y1}. "
+                    "Widen Years (sector data is mostly 2018–2025) or pick another circuit."
+                )
             else:
                 st.warning("No fastest-sector rows for this selection.")
         else:
-            st.warning("No sector timing matched this circuit.")
+            st.warning("No sector timing matched this circuit in the source tables.")
 
     s1, s2, s3 = st.columns([1, 1.25, 1])
     with s1:
